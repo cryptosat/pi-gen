@@ -93,7 +93,12 @@ fi
 ROOT_DEV="$(awk "\$2 == \"${ROOTFS_DIR}\" {print \$1}" /etc/mtab)"
 
 unmount "${ROOTFS_DIR}"
-zerofree "${ROOT_DEV}"
+
+zfs set canmount=off cedge
+zfs set mountpoint=/ cedge
+zfs set canmount=on cedge
+
+zpool destroy cedge
 
 unmount_image "${IMG_FILE}"
 

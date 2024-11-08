@@ -22,17 +22,26 @@ ROOT_MARGIN="$(echo "($ROOT_SIZE * 0.2 + 200 * 1024 * 1024) / 1" | bc)"
 
 BOOT_PART_START=$((ALIGN))
 BOOT_PART_SIZE=$(((BOOT_SIZE + ALIGN - 1) / ALIGN * ALIGN))
+# zpool first volume
 ROOT_PART_START=$((BOOT_PART_START + BOOT_PART_SIZE))
 ROOT_PART_SIZE=$(((ROOT_SIZE + ROOT_MARGIN + ALIGN  - 1) / ALIGN * ALIGN))
-IMG_SIZE=$((BOOT_PART_START + BOOT_PART_SIZE + ROOT_PART_SIZE))
+# zpool second volume
+ROOT2_PART_START=$((ROOT_PART_START + ROOT_PART_SIZE))
+ROOT2_PART_SIZE=$(((ROOT_SIZE + ROOT_MARGIN + ALIGN  - 1) / ALIGN * ALIGN))
+# zpool third volume
+ROOT3_PART_START=$((ROOT2_PART_START + ROOT2_PART_SIZE))
+ROOT3_PART_SIZE=$(((ROOT_SIZE + ROOT_MARGIN + ALIGN  - 1) / ALIGN * ALIGN))
+IMG_SIZE=$((BOOT_PART_START + BOOT_PART_SIZE + ROOT_PART_SIZE + ROOT2_PART_SIZE + ROOT3_PART_SIZE))
 
 truncate -s "${IMG_SIZE}" "${IMG_FILE}"
 
 parted --script "${IMG_FILE}" mklabel msdos
 parted --script "${IMG_FILE}" unit B mkpart primary fat32 "${BOOT_PART_START}" "$((BOOT_PART_START + BOOT_PART_SIZE - 1))"
-parted --script "${IMG_FILE}" unit B mkpart primary ext4 "${ROOT_PART_START}" "$((ROOT_PART_START + ROOT_PART_SIZE - 1))"
+parted --script "${IMG_FILE}" unit B mkpart primary zfs "${ROOT_PART_START}" "$((ROOT_PART_START + ROOT_PART_SIZE - 1))"
+parted --script "${IMG_FILE}" unit B mkpart primary zfs "${ROOT2_PART_START}" "$((ROOT2_PART_START + ROOT2_PART_SIZE - 1))"
+parted --script "${IMG_FILE}" unit B mkpart primary zfs "${ROOT3_PART_START}" "$((ROOT3_PART_START + ROOT3_PART_SIZE - 1))"
 
-echo "Creating loop device..."
+echo "Creating loop devices..."
 cnt=0
 until ensure_next_loopdev && LOOP_DEV="$(losetup --show --find --partscan "$IMG_FILE")"; do
 	if [ $cnt -lt 5 ]; then
@@ -48,6 +57,8 @@ done
 ensure_loopdev_partitions "$LOOP_DEV"
 BOOT_DEV="${LOOP_DEV}p1"
 ROOT_DEV="${LOOP_DEV}p2"
+ROOT2_DEV="${LOOP_DEV}p3"
+ROOT3_DEV="${LOOP_DEV}p4"
 
 ROOT_FEATURES="^huge_file"
 for FEATURE in 64bit; do
@@ -62,12 +73,24 @@ else
 	FAT_SIZE=32
 fi
 
-mkdosfs -n bootfs -F "$FAT_SIZE" -s 4 -v "$BOOT_DEV" > /dev/null
-mkfs.ext4 -L rootfs -O "$ROOT_FEATURES" "$ROOT_DEV" > /dev/null
+ZPOOL_NAME="cedge"
 
-mount -v "$ROOT_DEV" "${ROOTFS_DIR}" -t ext4
+mkdosfs -n bootfs -F "$FAT_SIZE" -s 4 -v "$BOOT_DEV" > /dev/null
+zpool create \
+	-o ashift=12 \
+	-O acltype=posixacl \
+	-O atime=off \
+	-O compression=lz4 \
+	-O dnodesize=auto \
+	-O normalization=formD \
+	-O xattr=sa \
+	"$ZPOOL_NAME" raidz "$ROOT_DEV" "$ROOT2_DEV" "$ROOT3_DEV"
+zfs set mountpoint="${ROOTFS_DIR}" "${ZPOOL_NAME}"
+
 mkdir -p "${ROOTFS_DIR}/boot/firmware"
 mount -v "$BOOT_DEV" "${ROOTFS_DIR}/boot/firmware" -t vfat
 
-rsync -aHAXx --exclude /var/cache/apt/archives --exclude /boot/firmware "${EXPORT_ROOTFS_DIR}/" "${ROOTFS_DIR}/"
+echo "rsync start"
+rsync -aHXx --exclude /var/cache/apt/archives --exclude /boot/firmware "${EXPORT_ROOTFS_DIR}/" "${ROOTFS_DIR}/"
 rsync -rtx "${EXPORT_ROOTFS_DIR}/boot/firmware/" "${ROOTFS_DIR}/boot/firmware/"
+echo "rsync end"
