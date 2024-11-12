@@ -7,6 +7,17 @@ SBOM_FILE="${STAGE_WORK_DIR}/${IMG_FILENAME}${IMG_SUFFIX}.sbom"
 sed -i 's/^update_initramfs=.*/update_initramfs=all/' "${ROOTFS_DIR}/etc/initramfs-tools/update-initramfs.conf"
 
 on_chroot << EOF
+apt-get install zfs-dkms zfs-initramfs zfsutils-linux
+
+
+
+
+EOF
+
+on_chroot << EOF
+echo ZFS_INITRD_PRE_MOUNTROOT=yes >> /etc/default/zfs
+echo ZPOOL_IMPORT="cedge" >> /etc/default/zfs
+cat /etc/default/zfs
 update-initramfs -k all -c
 if [ -x /etc/init.d/fake-hwclock ]; then
 	/etc/init.d/fake-hwclock stop
@@ -91,14 +102,12 @@ if hash syft 2>/dev/null; then
 fi
 
 ROOT_DEV="$(awk "\$2 == \"${ROOTFS_DIR}\" {print \$1}" /etc/mtab)"
-
 unmount "${ROOTFS_DIR}"
 
 zfs set canmount=off cedge
 zfs set mountpoint=/ cedge
 zfs set canmount=on cedge
-
-zpool destroy cedge
+zpool export cedge
 
 unmount_image "${IMG_FILE}"
 
